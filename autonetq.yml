@@ -1,0 +1,103 @@
+---
+- hosts: localhost leaf spine
+  gather_facts: False
+  tasks:
+     - name: Gather BGP Adjanceny info in JSON format
+       local_action: command netq check bgp json
+       register: result
+       run_once: true
+       failed_when: "'ERROR' in result.stdout"
+
+     #http://docs.ansible.com/ansible/latest/playbooks_filters.html
+     - name: Turn the stdout string into json
+       set_fact: json_output="{{result.stdout | from_json }}"
+       run_once: true
+       delegate_to: localhost
+    
+    #This task simply prints out the json_ouput variable to the terminal screen (not Slack) 
+     - name: output the json_output variable
+       debug:
+         var: json_output
+       run_once: true
+       delegate_to: localhost
+
+    #This task will only send the all clear, if there is no problems (no nodes report failure)
+     - name: Send all clear header message via Slack
+       slack:
+         token: (REMOVED ON PURPOSE BY SEAN!)
+         msg: 'No Connections are reporting problems in network fabric'
+         channel: #autobgp
+         username: "Sean's Auto-BGP Ansible Bot"
+         color: good
+       delegate_to: localhost
+       tags:
+         - slack
+       when: json_output["failedNodes"]|length == 0
+       run_once: true
+
+     # this fails on purpose to exit the playbook for the same reason we gave the all clear above (otherwise its skipped)
+     - fail:
+         msg: "No Connections are reporting problems"
+       when: json_output["failedNodes"]|length == 0
+       delegate_to: localhost
+       run_once: true
+
+     - name: Send header message via Slack
+       slack:
+         token: (REMOVED ON PURPOSE BY SEAN!)
+         msg: 'Connections reporting problems in network fabric'
+         channel: #autobgp
+         username: "Sean's Auto-BGP Ansible Bot"
+       delegate_to: localhost
+       run_once: true
+       tags:
+         - slack
+
+     - name: Send bad links message via Slack
+       slack:
+         token: (REMOVED ON PURPOSE BY SEAN!)
+         msg: 'Device {{item["node"]}}, Port {{item["neighbor"]}} Why is this broken? {{item["reason"]}}'
+         channel: #autobgp
+         username: "Sean's Auto-BGP Ansible Bot"
+         color: warning
+       delegate_to: localhost
+       with_items:  "{{json_output['failedNodes']}}"
+       run_once: true
+       tags:
+         - slack
+
+     #This task only runs on the nodes that have a reason of "Interface Down" and it will just ifup the port
+     - name: Fixing the link now with Ansible
+       shell: /sbin/ifup {{item["neighbor"]}};
+       delegate_to: "{{item['node']}}"
+       become: yes
+       with_items:  "{{json_output['failedNodes']}}"
+       when: '"Interface down" in item["reason"]'
+       run_once: True
+
+     #This task is just slacking out what we did in the task above
+     - name: Sending Slack Messages for fixing interface stanzas
+       slack:
+         token: (REMOVED ON PURPOSE BY SEAN!)
+         msg: ':thumbsup:  Device {{item["node"]}}, Port {{item["neighbor"]}} has been turned back on'
+         channel: #autobgp
+         username: "Sean's Auto-BGP Ansible Bot"
+         color: good
+       delegate_to: "{{item['node']}}"
+       run_once: true
+       with_items:  "{{json_output['failedNodes']}}"
+       when: '"Interface down" in item["reason"]'
+       tags:
+         - slack
+
+     #This is just letting us know the playbook has gotten to the last task
+     - name: Send footer message via Slack
+       slack:
+         token: (REMOVED ON PURPOSE BY SEAN!)
+         msg: 'All troubleshooting methods are finished'
+         channel: #autobgp
+         username: "Sean's Auto-BGP Ansible Bot"
+       delegate_to: localhost
+       run_once: true
+       tags:
+         - slack
